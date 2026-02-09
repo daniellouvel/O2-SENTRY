@@ -19,6 +19,16 @@ class SentryBluetoothService {
   double calMv = 10.5;
   double ppo2Limit = 1.4;
   DateTime? installationDate;
+  DateTime? calibrationDate;
+
+  // Modèle de sonde et plages mV dynamiques
+  String sensorModel = "PSR-11-39-MDSX1 (Standard)";
+  double sensorMvMin = 9.0;
+  double sensorMvMax = 13.0;
+
+  // Buffer des dernières mesures mV (pour vérification stabilité)
+  final List<double> _mvBuffer = [];
+  List<double> get recentMv => List.unmodifiable(_mvBuffer);
 
   final StreamController<double> _mvController =
       StreamController<double>.broadcast();
@@ -58,19 +68,32 @@ class SentryBluetoothService {
       if (dateStr != null) {
         installationDate = DateTime.parse(dateStr);
       }
+
+      String? calDateStr = prefs.getString('calibration_date');
+      if (calDateStr != null) {
+        calibrationDate = DateTime.parse(calDateStr);
+      }
+
+      // Charger le modèle de sonde et ses plages mV
+      sensorModel = prefs.getString('sensor_model') ?? sensorModel;
+      sensorMvMin = prefs.getDouble('sensor_mv_min') ?? sensorMvMin;
+      sensorMvMax = prefs.getDouble('sensor_mv_max') ?? sensorMvMax;
     } catch (e) {
       // Garder les valeurs par défaut si SharedPreferences échoue
     }
   }
 
-  /// Sauvegarde la tension de calibration (mV à l'air)
+  /// Sauvegarde la tension de calibration (mV à l'air) et la date
   Future<void> saveCalibration(double value) async {
     try {
       final prefs = await SharedPreferences.getInstance();
+      final now = DateTime.now();
       await prefs.setDouble('cal_mv', value);
+      await prefs.setString('calibration_date', now.toIso8601String());
       calMv = value;
+      calibrationDate = now;
     } catch (e) {
-      // Ne pas mettre à jour calMv si la sauvegarde échoue
+      // Ne pas mettre à jour si la sauvegarde échoue
     }
   }
 
@@ -93,6 +116,21 @@ class SentryBluetoothService {
       installationDate = date;
     } catch (e) {
       // Ne pas mettre à jour installationDate si la sauvegarde échoue
+    }
+  }
+
+  /// Sauvegarde le modèle de sonde et ses plages mV
+  Future<void> saveSensorModel(String name, double min, double max) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('sensor_model', name);
+      await prefs.setDouble('sensor_mv_min', min);
+      await prefs.setDouble('sensor_mv_max', max);
+      sensorModel = name;
+      sensorMvMin = min;
+      sensorMvMax = max;
+    } catch (e) {
+      // Ne pas mettre à jour si la sauvegarde échoue
     }
   }
 
@@ -234,6 +272,12 @@ class SentryBluetoothService {
                     currentMv = val;
                     _mvController.add(val);
                     _resetMvWatchdog();
+
+                    // Buffer circulaire des 10 dernières mesures
+                    _mvBuffer.add(val);
+                    if (_mvBuffer.length > 10) {
+                      _mvBuffer.removeAt(0);
+                    }
                   }
                 } catch (e) {
                   // Erreur de parsing ignorée pour la stabilité

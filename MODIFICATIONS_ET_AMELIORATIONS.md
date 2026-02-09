@@ -139,43 +139,58 @@ Fichier : home_screen.dart
 
 ### AXE 2 - SECURITE PLONGEE (Priorite HAUTE)
 
-#### 2.1 Alarme sonore/vibration
-Les alarmes visuelles (banniere rouge) ne suffisent pas en situation de
-preparation de plongee (bruit, stress, attention ailleurs).
+#### 2.1 Alarme sonore/vibration — FAIT
+Vibration haptique (`HapticFeedback.heavyImpact()`) declenchee sur :
+- Tension sonde anormale (hors plage du modele)
+- Sonde perimee (> 12 mois)
+- FO2 > 40% (melange hyperoxique) — nouvelle banniere orange
+Anti-spam : cooldown de 3 secondes entre vibrations (`_lastVibration`).
 ```
-Action : Ajouter vibration (HapticFeedback ou vibration package) +
-         son d'alerte pour :
-         - Tension sonde anormale (< 7 mV ou > 14 mV)
-         - Sonde perimee (> 12 mois)
-         - FO2 > 40% (melange hyperoxique)
-```
-
-#### 2.2 Plage d'alarme mV configurable par modele de sonde
-Actuellement les seuils 7.0 et 14.0 mV sont en dur dans home_screen.dart.
-Le modele de sonde est selectionne dans config_page mais n'est pas sauvegarde
-et ses plages (sensorSpecs) ne sont pas utilisees pour les alarmes.
-```
-Fichier : config_page.dart (sensorSpecs) + home_screen.dart (mvAlarm)
-Action : Sauvegarder le modele selectionne + utiliser ses plages min/max
-         pour l'alarme au lieu des valeurs fixes 7.0/14.0
+Fichier : home_screen.dart
+Import : flutter/services.dart
+Nouvelles bannieres : FO2 > 40% (orange), sonde perimee (rouge)
 ```
 
-#### 2.3 Verification de calibration
-Aucun controle n'empeche de calibrer avec une valeur mV aberrante
-(ex: 0.5 mV ou 25 mV). Une mauvaise calibration fausse tous les calculs.
+#### 2.2 Plage d'alarme mV configurable par modele de sonde — FAIT
+Le modele de sonde est maintenant persiste dans SharedPreferences avec ses
+plages mV (min/max). Les alarmes utilisent les seuils dynamiques du modele
+au lieu des valeurs fixes 7.0/14.0.
+```
+Fichier : bluetooth_service.dart
+Nouveaux champs : sensorModel, sensorMvMin, sensorMvMax
+Nouvelle methode : saveSensorModel(name, min, max)
+Persistence : sensor_model, sensor_mv_min, sensor_mv_max dans SharedPreferences
+
+Fichier : config_page.dart
+initState : charge le modele sauvegarde depuis btService.sensorModel
+onChanged : appelle btService.saveSensorModel() avec les specs du modele
+Cas "Custom (Manuel)" : garde les plages precedentes
+
+Fichier : home_screen.dart
+mvAlarm : utilise btService.sensorMvMin / sensorMvMax
+```
+
+#### 2.3 Verification de calibration — FAIT
+Avant calibration, verification que la tension mV est dans la plage
+raisonnable [5.0, 16.0]. Hors plage : dialog d'erreur, calibration refusee.
 ```
 Fichier : config_page.dart, bouton CALIBRER
-Action : Refuser calibration si mV hors plage raisonnable (ex: < 5.0 ou > 16.0)
-         avec message d'avertissement
+Nouvelle methode : _showError(title, msg) — dialog d'erreur
 ```
 
-#### 2.4 Stabilite de la mesure avant calibration
-La calibration prend la valeur mV instantanee. Si la sonde n'est pas
-stabilisee, la reference sera fausse.
+#### 2.4 Stabilite de la mesure avant calibration — FAIT
+Buffer circulaire de 10 mesures mV dans bluetooth_service.dart. Avant
+calibration, verification : >= 10 mesures requises + ecart-type <= 0.15 mV.
 ```
-Action : Verifier que la variance des 10 dernieres mesures est < seuil
-         avant d'autoriser la calibration. Sinon, afficher "Attendre
-         stabilisation..."
+Fichier : bluetooth_service.dart
+Nouveau champ : _mvBuffer (List<double>, max 10)
+Getter : recentMv (List.unmodifiable)
+Alimentation : dans onValueReceived du listener BLE
+
+Fichier : config_page.dart
+Import : dart:math (pow, sqrt)
+Nouvelle methode : _stdDev(values) — calcul ecart-type
+Verification : buffer.length < 10 => refus, stdDev > 0.15 => refus
 ```
 
 ---
@@ -211,36 +226,50 @@ Fichier : bluetooth_service.dart
 
 ### AXE 4 - EXPERIENCE UTILISATEUR (Priorite MOYENNE)
 
-#### 4.1 Bouton de reconnexion manuelle
-Si la sonde est deconnectee, l'utilisateur n'a aucun moyen de forcer
-une tentative de reconnexion (il doit attendre le cycle automatique).
-```
-Fichier : home_screen.dart, banniere SONDE DECONNECTEE
-Action : Rendre la banniere cliquable -> appel btService.startScan()
-         (avec un debounce pour eviter le spam)
-```
-
-#### 4.2 Affichage de la tension mV sur l'ecran principal
-La tension mV n'est visible que dans la page configuration. Pour un
-plongeur experimenté, cette info est utile pour evaluer l'etat de la sonde.
+#### 4.1 Bouton de reconnexion manuelle — FAIT
+La banniere "SONDE DECONNECTEE" est maintenant cliquable (GestureDetector).
+Appelle `btService.startScan()` avec debounce de 5 secondes (`_lastReconnectTap`).
+Icone refresh + texte "APPUYEZ POUR RECONNECTER" pour guider l'utilisateur.
 ```
 Fichier : home_screen.dart
-Action : Ajouter un petit texte sous la jauge O2 : "10.52 mV"
+Nouveau champ : DateTime? _lastReconnectTap
+Nouvelle methode : _manualReconnect()
+Case disconnected : wrappee dans GestureDetector
 ```
 
-#### 4.3 Historique / Tendance
-Pas de visualisation de l'evolution de la FO2 dans le temps.
+#### 4.2 Affichage de la tension mV sur l'ecran principal — FAIT
+La tension mV est affichee sous la valeur FO2% dans la jauge circulaire.
+Texte discret (13px, Colors.white38) pour ne pas distraire du FO2.
 ```
-Action : Ajouter un mini-graphique (sparkline) des 60 dernieres secondes
-         sous la jauge. Package suggere : fl_chart
+Fichier : home_screen.dart
+Ajout dans la Column interne du Stack (jauge) : "XX.XX mV"
 ```
 
-#### 4.4 Indicateur de calibration
-Aucune indication sur l'ecran principal de quand la derniere calibration
-a ete effectuee ou si elle est recente.
+#### 4.3 Historique / Tendance FO2 — FAIT
+Mini sparkline (50px) entre la jauge et le bloc MOD, affichant les 60
+dernieres valeurs FO2. Courbe cyan semi-transparente, sans axes ni labels.
+Dependance : fl_chart ^0.69.0 ajoutee dans pubspec.yaml.
 ```
-Action : Sauvegarder la date de derniere calibration + afficher un
-         avertissement si > 24h depuis le dernier calibrage
+Fichier : pubspec.yaml — fl_chart: ^0.69.0
+Fichier : home_screen.dart
+Nouveaux champs : _fo2History (List<double>, max 60), _maxHistory = 60
+Nouvelle methode : _buildFO2Sparkline() — LineChart minimal
+Alimentation : dans le StreamBuilder, si snapshot.hasData
+```
+
+#### 4.4 Indicateur de calibration — FAIT
+Date de derniere calibration sauvegardee automatiquement dans
+`saveCalibration()`. Banniere ambre "CALIBRATION REQUISE (> 24H)"
+sur l'ecran principal si calibrationDate == null ou > 24h.
+Informative seulement (pas de vibration).
+```
+Fichier : bluetooth_service.dart
+Nouveau champ : DateTime? calibrationDate
+Persistence : 'calibration_date' dans SharedPreferences (init + saveCalibration)
+
+Fichier : home_screen.dart
+Nouveau bool : calAlarm (null ou > 24h)
+Banniere ambre apres les bannieres d'alarme rouge/orange
 ```
 
 ---
@@ -275,12 +304,13 @@ pas du code Arduino C++. Le vrai code ESP32 n'est pas dans le depot.
 Action : Remplacer par le vrai code Arduino/ESP32
 ```
 
-#### 6.2 Tests unitaires
-Aucun test unitaire n'existe pour O2MathEngine, la logique BLE,
-ou les calculs de securite.
+#### 6.2 Tests unitaires O2MathEngine — FAIT
+12 tests unitaires couvrant calculateFO2 et calculateMOD :
+- FO2 : air standard, double mV, zero mV, calMv=0 (garde), EAN32, sonde faible
+- MOD : air ppO2=1.4, EAN32, EAN36, O2 pur, fo2=0 (garde), fo2 negatif (garde)
 ```
-Action prioritaire : Tester O2MathEngine (FO2, MOD) car c'est critique
-         pour la securite des plongeurs
+Fichier : test/services/o2_math_engine_test.dart (NOUVEAU)
+12/12 tests passent
 ```
 
 ---
@@ -289,9 +319,11 @@ Action prioritaire : Tester O2MathEngine (FO2, MOD) car c'est critique
 
 | Priorite | Axe | Items |
 |----------|-----|-------|
-| HAUTE    | Fiabilite BLE | 1.1, 1.2, 1.3, 1.4 |
-| HAUTE    | Securite plongee | 2.1, 2.2, 2.3, 2.4 |
-| MOYENNE  | Qualite code | 3.1, 3.2, 3.3, 3.4 |
-| MOYENNE  | UX | 4.1, 4.2, 4.3, 4.4 |
-| BASSE    | ESP32 | 5.1, 5.2 |
-| BASSE    | Structure | 6.1, 6.2 |
+| Priorite | Axe | Items | Statut |
+|----------|-----|-------|--------|
+| HAUTE    | Fiabilite BLE | 1.1, 1.2, 1.3, 1.4 | TOUT FAIT |
+| HAUTE    | Securite plongee | 2.1, 2.2, 2.3, 2.4 | TOUT FAIT |
+| MOYENNE  | Qualite code | 3.1, 3.2, 3.3, 3.4 | TOUT FAIT |
+| MOYENNE  | UX | 4.1, 4.2, 4.3, 4.4 | TOUT FAIT |
+| BASSE    | ESP32 | 5.1, 5.2 | A FAIRE |
+| BASSE    | Structure | 6.1, 6.2 | 6.2 FAIT, 6.1 A FAIRE |

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
 import '../services/bluetooth_service.dart';
 
@@ -24,7 +25,11 @@ class _ConfigPageState extends State<ConfigPage> {
   @override
   void initState() {
     super.initState();
-    selectedSensor = sensorSpecs.keys.first;
+    // Charger le modèle sauvegardé, ou le premier par défaut
+    final saved = widget.btService.sensorModel;
+    selectedSensor = sensorSpecs.containsKey(saved)
+        ? saved
+        : sensorSpecs.keys.first;
     _sub = widget.btService.mvStream.listen((_) {
       if (mounted) setState(() {});
     });
@@ -48,6 +53,32 @@ class _ConfigPageState extends State<ConfigPage> {
       await widget.btService.saveInstallDate(picked);
       setState(() {});
     }
+  }
+
+  void _showError(String title, String msg) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1E1E1E),
+        title: Text(title, style: const TextStyle(color: Colors.redAccent)),
+        content: Text(msg, style: const TextStyle(color: Colors.white70)),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text("OK"),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// Calcule l'écart-type d'une liste de valeurs
+  double _stdDev(List<double> values) {
+    final mean = values.reduce((a, b) => a + b) / values.length;
+    final variance =
+        values.map((v) => pow(v - mean, 2)).reduce((a, b) => a + b) /
+            values.length;
+    return sqrt(variance);
   }
 
   Future<bool> _confirm(String title, String msg) async {
@@ -137,7 +168,21 @@ class _ConfigPageState extends State<ConfigPage> {
               items: sensorSpecs.keys
                   .map((s) => DropdownMenuItem(value: s, child: Text(s)))
                   .toList(),
-              onChanged: (v) => setState(() => selectedSensor = v!),
+              onChanged: (v) {
+                setState(() => selectedSensor = v!);
+                final specs = sensorSpecs[v]!;
+                // "Custom (Manuel)" a [0.0, 0.0] : garder les plages précédentes
+                if (specs[0] > 0 && specs[1] > 0) {
+                  widget.btService.saveSensorModel(v!, specs[0], specs[1]);
+                } else {
+                  // Sauvegarder seulement le nom, pas les plages
+                  widget.btService.saveSensorModel(
+                    v!,
+                    widget.btService.sensorMvMin,
+                    widget.btService.sensorMvMax,
+                  );
+                }
+              },
             ),
 
             // 3. DATE D'INSTALLATION (Sous la sonde)
@@ -229,14 +274,45 @@ class _ConfigPageState extends State<ConfigPage> {
                   foregroundColor: Colors.white,
                 ),
                 onPressed: () async {
+                  final currentMv = widget.btService.currentMv;
+
+                  // Vérification 1 : plage mV valide (2.3)
+                  if (currentMv < 5.0 || currentMv > 16.0) {
+                    _showError(
+                      "Calibration impossible",
+                      "Tension hors plage (${currentMv.toStringAsFixed(2)} mV).\n"
+                          "La tension doit être entre 5.0 et 16.0 mV.",
+                    );
+                    return;
+                  }
+
+                  // Vérification 2 : stabilité du signal (2.4)
+                  final buffer = widget.btService.recentMv;
+                  if (buffer.length < 10) {
+                    _showError(
+                      "Calibration impossible",
+                      "Attendre plus de mesures...\n"
+                          "(${buffer.length}/10 reçues)",
+                    );
+                    return;
+                  }
+                  if (_stdDev(buffer) > 0.15) {
+                    _showError(
+                      "Calibration impossible",
+                      "Signal non stabilisé...\n"
+                          "Écart-type : ${_stdDev(buffer).toStringAsFixed(3)} mV "
+                          "(max 0.150 mV).",
+                    );
+                    return;
+                  }
+
+                  // Confirmation et calibration
                   bool ok = await _confirm(
                     "Calibration",
-                    "Valider la calibration sur ${widget.btService.currentMv} mV ?",
+                    "Valider la calibration sur ${currentMv.toStringAsFixed(2)} mV ?",
                   );
                   if (ok) {
-                    await widget.btService.saveCalibration(
-                      widget.btService.currentMv,
-                    );
+                    await widget.btService.saveCalibration(currentMv);
                     ScaffoldMessenger.of(context).showSnackBar(
                       const SnackBar(content: Text("Capteur calibré !")),
                     );
