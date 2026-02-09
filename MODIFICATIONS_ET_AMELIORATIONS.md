@@ -102,37 +102,37 @@ _reconnectTimer = Timer(const Duration(seconds: 3), () {
 
 ### AXE 1 - FIABILITE BLE (Priorite HAUTE)
 
-#### 1.1 Try/catch dans _discoverServices()
-Actuellement, `_discoverServices()` n'a aucun try/catch. Si `discoverServices()`
-ou `setNotifyValue()` echoue, l'etat reste bloque sur "connecting" indefiniment.
+#### 1.1 Try/catch dans _discoverServices() — FAIT
+`_discoverServices()` est maintenant encadre d'un try/catch. En cas d'echec
+de `discoverServices()` ou `setNotifyValue()`, l'etat passe en `disconnected`
+et `_scheduleReconnect()` est appele.
 ```
 Fichier : bluetooth_service.dart, methode _discoverServices()
-Action : Encadrer avec try/catch, passer en disconnected + scheduleReconnect en cas d'erreur
 ```
 
-#### 1.2 Timeout sur la connexion BLE
-`d.connect()` peut rester bloque indefiniment sur certains appareils Android.
+#### 1.2 Timeout sur la connexion BLE — FAIT
+Ajout d'un timeout de 10 secondes sur `d.connect()` pour eviter les blocages
+indefinis sur certains appareils Android.
 ```
 Fichier : bluetooth_service.dart, methode _connectToDevice()
-Action : Ajouter un timeout -> await d.connect(timeout: Duration(seconds: 10))
+-> await d.connect(timeout: const Duration(seconds: 10))
 ```
 
-#### 1.3 Watchdog sur le flux mV
-Si aucune donnee mV n'est recue pendant X secondes alors que l'etat est
-"connected", la connexion est probablement morte sans evenement BLE.
+#### 1.3 Watchdog sur le flux mV — FAIT
+Timer `_mvWatchdog` reset a chaque reception mV via `_resetMvWatchdog()`.
+Si aucune donnee pendant 10 secondes et etat = connected, force deconnexion
++ reconnexion automatique. Cancel dans `dispose()` et `forgetDevice()`.
 ```
 Fichier : bluetooth_service.dart
-Action : Timer reset a chaque reception mV. Si expire -> forcer reconnexion.
-Duree suggeree : 10-15 secondes sans donnee = deconnexion
+Nouveau champ : Timer? _mvWatchdog
+Nouvelle methode : _resetMvWatchdog()
 ```
 
-#### 1.4 Gestion de la reprise d'app (lifecycle)
-Quand l'app revient du background, la connexion BLE peut etre perdue
-silencieusement (Android tue les connexions BLE en arriere-plan).
+#### 1.4 Gestion de la reprise d'app (lifecycle) — FAIT
+`_HomeScreenState` implemente `WidgetsBindingObserver`. Sur `AppLifecycleState.resumed`,
+appel de `btService.startScan()` (la garde `if connected return` empeche un scan inutile).
 ```
 Fichier : home_screen.dart
-Action : Ajouter WidgetsBindingObserver, sur didChangeAppLifecycleState
-         -> verifier connexion et relancer scan si necessaire
 ```
 
 ---
@@ -182,37 +182,29 @@ Action : Verifier que la variance des 10 dernieres mesures est < seuil
 
 ### AXE 3 - QUALITE DU CODE (Priorite MOYENNE)
 
-#### 3.1 sensor_model.dart n'est pas utilise
-Le fichier `lib/models/sensor_model.dart` definit SensorProfile et sensorLibrary
-mais n'est importe nulle part. config_page.dart redefinit ses propres specs
-dans un Map local.
+#### 3.1 sensor_model.dart n'est pas utilise — FAIT
+Fichier `lib/models/sensor_model.dart` supprime (+ repertoire `lib/models/` vide).
+config_page.dart utilise ses propres specs localement.
+
+#### 3.2 Version en dur dans home_screen.dart — FAIT
+Version lue dynamiquement via `package_info_plus` (`PackageInfo.fromPlatform()`).
+Dependance ajoutee dans pubspec.yaml. Version pubspec corrigee a `1.4.0+1`.
 ```
-Action : Utiliser sensor_model.dart comme source unique pour les modeles
-         de sondes, ou le supprimer
+Fichiers : pubspec.yaml, home_screen.dart
 ```
 
-#### 3.2 Version en dur dans home_screen.dart
-La version "1.4.0" est ecrite en dur dans _HomeScreenState.
-```
-Fichier : home_screen.dart ligne 17
-Action : Lire depuis pubspec.yaml via package_info_plus
-```
+#### 3.3 Pas de gestion d'erreur sur SharedPreferences — FAIT
+Try/catch ajoute sur tous les appels SharedPreferences dans bluetooth_service.dart :
+`init()`, `saveCalibration()`, `savePPO2()`, `saveInstallDate()`, `forgetDevice()`,
+`_connectToDevice()`. Valeurs par defaut conservees en cas d'echec.
 
-#### 3.3 Pas de gestion d'erreur sur SharedPreferences
-Les appels SharedPreferences dans init(), saveCalibration(), etc.
-n'ont pas de try/catch. Si le stockage echoue, l'app crash silencieusement.
+#### 3.4 _discoverServices non awaite — FAIT
+`_discoverServices()` conserve l'appel non-awaite (fire-and-forget) depuis
+`_connectToDevice()` pour ne pas bloquer le listener connectionState,
+mais possede maintenant son propre try/catch qui passe en `disconnected`
++ `_scheduleReconnect()` en cas d'erreur.
 ```
-Action : Ajouter try/catch avec valeurs par defaut sur chaque acces
-```
-
-#### 3.4 _discoverServices non awaite
-Dans _connectToDevice(), `_discoverServices(d)` est appele sans await.
-C'est une methode async void (fire-and-forget). Si elle echoue, aucune
-erreur n'est capturee par le try/catch de _connectToDevice.
-```
-Fichier : bluetooth_service.dart ligne 181
-Action : Faire de _discoverServices une Future<void> et l'awaiter,
-         ou ajouter son propre try/catch
+Fichier : bluetooth_service.dart
 ```
 
 ---

@@ -36,6 +36,7 @@ class SentryBluetoothService {
   StreamSubscription? _deviceStateSubscription;
   StreamSubscription? _charSubscription;
   Timer? _reconnectTimer;
+  Timer? _mvWatchdog;
 
   String? get associatedMac => _savedMac;
 
@@ -47,49 +48,71 @@ class SentryBluetoothService {
 
   /// Initialisation : Charge toutes les données sauvegardées
   Future<void> init() async {
-    final prefs = await SharedPreferences.getInstance();
-    _savedMac = prefs.getString('associated_mac');
-    calMv = prefs.getDouble('cal_mv') ?? 10.5;
-    ppo2Limit = prefs.getDouble('ppo2_limit') ?? 1.4;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      _savedMac = prefs.getString('associated_mac');
+      calMv = prefs.getDouble('cal_mv') ?? 10.5;
+      ppo2Limit = prefs.getDouble('ppo2_limit') ?? 1.4;
 
-    String? dateStr = prefs.getString('install_date');
-    if (dateStr != null) {
-      installationDate = DateTime.parse(dateStr);
+      String? dateStr = prefs.getString('install_date');
+      if (dateStr != null) {
+        installationDate = DateTime.parse(dateStr);
+      }
+    } catch (e) {
+      // Garder les valeurs par défaut si SharedPreferences échoue
     }
   }
 
   /// Sauvegarde la tension de calibration (mV à l'air)
   Future<void> saveCalibration(double value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('cal_mv', value);
-    calMv = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('cal_mv', value);
+      calMv = value;
+    } catch (e) {
+      // Ne pas mettre à jour calMv si la sauvegarde échoue
+    }
   }
 
   /// Sauvegarde la limite de ppO2 choisie (1.3 - 1.6)
   Future<void> savePPO2(double value) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble('ppo2_limit', value);
-    ppo2Limit = value;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setDouble('ppo2_limit', value);
+      ppo2Limit = value;
+    } catch (e) {
+      // Ne pas mettre à jour ppo2Limit si la sauvegarde échoue
+    }
   }
 
   /// Sauvegarde la date d'installation de la sonde
   Future<void> saveInstallDate(DateTime date) async {
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString('install_date', date.toIso8601String());
-    installationDate = date;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString('install_date', date.toIso8601String());
+      installationDate = date;
+    } catch (e) {
+      // Ne pas mettre à jour installationDate si la sauvegarde échoue
+    }
   }
 
   /// Supprime l'association et déconnecte la sonde
   Future<void> forgetDevice() async {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
+    _mvWatchdog?.cancel();
+    _mvWatchdog = null;
     _deviceStateSubscription?.cancel();
     _deviceStateSubscription = null;
     _charSubscription?.cancel();
     _charSubscription = null;
 
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.remove('associated_mac');
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.remove('associated_mac');
+    } catch (e) {
+      // La déconnexion doit continuer même si le storage échoue
+    }
     _savedMac = null;
     if (device != null) {
       await device!.disconnect();
@@ -153,7 +176,7 @@ class SentryBluetoothService {
     _isConnecting = true;
     _setState(SentryConnectionState.connecting);
     try {
-      await d.connect();
+      await d.connect(timeout: const Duration(seconds: 10));
       device = d;
 
       // Écouter les changements d'état de connexion du device
@@ -166,6 +189,8 @@ class SentryBluetoothService {
             _setState(SentryConnectionState.disconnected);
             _charSubscription?.cancel();
             _charSubscription = null;
+            _mvWatchdog?.cancel();
+            _mvWatchdog = null;
             _isConnecting = false;
             _scheduleReconnect();
           }
@@ -174,9 +199,13 @@ class SentryBluetoothService {
 
       // Sauvegarde la MAC si c'est une nouvelle association
       if (_savedMac == null) {
-        final prefs = await SharedPreferences.getInstance();
         _savedMac = d.remoteId.toString();
-        await prefs.setString('associated_mac', _savedMac!);
+        try {
+          final prefs = await SharedPreferences.getInstance();
+          await prefs.setString('associated_mac', _savedMac!);
+        } catch (e) {
+          // Continuer même si la sauvegarde MAC échoue
+        }
       }
       _discoverServices(d);
     } catch (e) {
@@ -188,32 +217,55 @@ class SentryBluetoothService {
 
   /// Découvre les services et s'abonne aux notifications de tension (mV)
   void _discoverServices(BluetoothDevice d) async {
-    List<BluetoothService> services = await d.discoverServices();
-    for (var s in services) {
-      if (s.uuid.toString().toLowerCase() == serviceUuid) {
-        for (var c in s.characteristics) {
-          if (c.uuid.toString().toLowerCase() == charUuid) {
-            await c.setNotifyValue(true);
-            _charSubscription?.cancel();
-            _charSubscription = c.onValueReceived.listen((data) {
-              try {
-                // Décodage du message envoyé par l'ESP32
-                String raw = utf8.decode(data).trim();
-                double? val = double.tryParse(raw);
-                if (val != null) {
-                  currentMv = val;
-                  _mvController.add(val);
+    try {
+      List<BluetoothService> services = await d.discoverServices();
+      for (var s in services) {
+        if (s.uuid.toString().toLowerCase() == serviceUuid) {
+          for (var c in s.characteristics) {
+            if (c.uuid.toString().toLowerCase() == charUuid) {
+              await c.setNotifyValue(true);
+              _charSubscription?.cancel();
+              _charSubscription = c.onValueReceived.listen((data) {
+                try {
+                  // Décodage du message envoyé par l'ESP32
+                  String raw = utf8.decode(data).trim();
+                  double? val = double.tryParse(raw);
+                  if (val != null) {
+                    currentMv = val;
+                    _mvController.add(val);
+                    _resetMvWatchdog();
+                  }
+                } catch (e) {
+                  // Erreur de parsing ignorée pour la stabilité
                 }
-              } catch (e) {
-                // Erreur de parsing ignorée pour la stabilité
-              }
-            });
+              });
+              _resetMvWatchdog();
+            }
           }
         }
       }
+      _isConnecting = false;
+      _setState(SentryConnectionState.connected);
+    } catch (e) {
+      _isConnecting = false;
+      _setState(SentryConnectionState.disconnected);
+      _scheduleReconnect();
     }
-    _isConnecting = false;
-    _setState(SentryConnectionState.connected);
+  }
+
+  /// Reset le watchdog mV — si aucune donnée pendant 10s, force reconnexion
+  void _resetMvWatchdog() {
+    _mvWatchdog?.cancel();
+    _mvWatchdog = Timer(const Duration(seconds: 10), () {
+      if (_currentState == SentryConnectionState.connected) {
+        _setState(SentryConnectionState.disconnected);
+        _charSubscription?.cancel();
+        _charSubscription = null;
+        _isConnecting = false;
+        device?.disconnect();
+        _scheduleReconnect();
+      }
+    });
   }
 
   /// Planifie une tentative de reconnexion après 3 secondes
@@ -235,6 +287,7 @@ class SentryBluetoothService {
   void dispose() {
     _disposed = true;
     _reconnectTimer?.cancel();
+    _mvWatchdog?.cancel();
     _deviceStateSubscription?.cancel();
     _charSubscription?.cancel();
     _scanSubscription?.cancel();
