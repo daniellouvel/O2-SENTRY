@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fl_chart/fl_chart.dart';
@@ -20,6 +21,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   String appVersion = "...";
   DateTime? _lastVibration;
   DateTime? _lastReconnectTap;
+  StreamSubscription<Map<String, String>>? _probesSub;
 
   // Historique FO2 pour sparkline (max 60 points)
   final List<double> _fo2History = [];
@@ -49,8 +51,156 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     WakelockPlus.enable(); // Empêche la mise en veille
-    widget.btService.startScan();
     _loadVersion();
+
+    if (!widget.btService.isPaired) {
+      // Aucune sonde associée → lancer scan + afficher dialog de sélection
+      widget.btService.startScan();
+      _listenForProbes();
+    } else {
+      // Sonde associée par MAC → scan pour auto-connexion
+      widget.btService.startScan();
+    }
+  }
+
+  void _listenForProbes() {
+    _probesSub?.cancel();
+    _probesSub = widget.btService.discoveredProbesStream.listen((probes) {
+      if (probes.isNotEmpty && mounted) {
+        _probesSub?.cancel();
+        _probesSub = null;
+        _showProbeSelectionDialog();
+      }
+    });
+  }
+
+  void _showProbeSelectionDialog() {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: true,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StatefulBuilder(
+          builder: (context, setSheetState) {
+            return StreamBuilder<Map<String, String>>(
+              stream: widget.btService.discoveredProbesStream,
+              builder: (context, snapshot) {
+                final probes = snapshot.data ?? {};
+                return Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 40,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          color: Colors.white24,
+                          borderRadius: BorderRadius.circular(2),
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        "ASSOCIER UNE SONDE",
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                          letterSpacing: 1.2,
+                        ),
+                      ),
+                      const SizedBox(height: 16),
+                      if (probes.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.symmetric(vertical: 30),
+                          child: Column(
+                            children: [
+                              SizedBox(
+                                width: 24,
+                                height: 24,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  color: Colors.cyan,
+                                ),
+                              ),
+                              SizedBox(height: 12),
+                              Text(
+                                "Recherche en cours...",
+                                style: TextStyle(
+                                  color: Colors.white54,
+                                  fontSize: 13,
+                                ),
+                              ),
+                            ],
+                          ),
+                        )
+                      else
+                        ...probes.entries.map((entry) {
+                          final mac = entry.key;
+                          final name = entry.value;
+                          // Afficher les 6 derniers caractères du MAC
+                          final shortMac = mac.length >= 8
+                              ? mac.substring(mac.length - 8)
+                              : mac;
+                          return ListTile(
+                            leading: const Icon(
+                              Icons.bluetooth,
+                              color: Colors.cyan,
+                            ),
+                            title: Text(
+                              name,
+                              style: const TextStyle(color: Colors.white),
+                            ),
+                            subtitle: Text(
+                              shortMac,
+                              style: const TextStyle(
+                                color: Colors.white38,
+                                fontSize: 11,
+                                fontFamily: 'monospace',
+                              ),
+                            ),
+                            onTap: () {
+                              Navigator.pop(context);
+                              widget.btService.selectProbe(mac);
+                            },
+                          );
+                        }),
+                      const SizedBox(height: 12),
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                        children: [
+                          TextButton(
+                            onPressed: () => Navigator.pop(context),
+                            child: const Text(
+                              "ANNULER",
+                              style: TextStyle(color: Colors.white54),
+                            ),
+                          ),
+                          TextButton(
+                            onPressed: () {
+                              Navigator.pop(context);
+                              widget.btService.startScan();
+                              _listenForProbes();
+                            },
+                            child: const Text(
+                              "RELANCER",
+                              style: TextStyle(color: Colors.cyan),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                );
+              },
+            );
+          },
+        );
+      },
+    );
   }
 
   Future<void> _loadVersion() async {
@@ -69,6 +219,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    _probesSub?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     WakelockPlus.disable();
     super.dispose();
@@ -123,30 +274,75 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         );
       case SentryConnectionState.disconnected:
-        return GestureDetector(
-          onTap: _manualReconnect,
-          child: Container(
-            width: double.infinity,
-            color: Colors.red.shade800,
-            padding: const EdgeInsets.symmetric(vertical: 6),
-            child: const Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(Icons.refresh, color: Colors.white70, size: 14),
-                SizedBox(width: 6),
-                Text(
-                  "SONDE DÉCONNECTÉE - APPUYEZ POUR RECONNECTER",
-                  textAlign: TextAlign.center,
-                  style: TextStyle(
-                    color: Colors.white,
-                    fontWeight: FontWeight.bold,
-                    fontSize: 11,
+        if (widget.btService.isPaired) {
+          // Sonde associée mais déconnectée → bannière rouge plus visible
+          return GestureDetector(
+            onTap: _manualReconnect,
+            child: Container(
+              width: double.infinity,
+              color: Colors.red.shade800,
+              padding: const EdgeInsets.symmetric(vertical: 14, horizontal: 20),
+              child: const Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(Icons.refresh, color: Colors.white, size: 24),
+                  SizedBox(width: 10),
+                  Flexible(
+                    child: Text(
+                      "SONDE DECONNECTEE\nAPPUYEZ POUR RECONNECTER",
+                      textAlign: TextAlign.center,
+                      style: TextStyle(
+                        color: Colors.white,
+                        fontWeight: FontWeight.bold,
+                        fontSize: 14,
+                      ),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        );
+          );
+        } else {
+          // Aucune sonde associée → gros bouton bien visible
+          return GestureDetector(
+            onTap: () {
+              widget.btService.startScan();
+              _listenForProbes();
+            },
+            child: Container(
+              width: double.infinity,
+              color: Colors.blueGrey.shade700,
+              padding: const EdgeInsets.symmetric(vertical: 18, horizontal: 20),
+              child: const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(Icons.bluetooth_searching,
+                      color: Colors.white, size: 36),
+                  SizedBox(height: 8),
+                  Text(
+                    "AUCUNE SONDE ASSOCIEE",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 16,
+                    ),
+                  ),
+                  SizedBox(height: 4),
+                  Text(
+                    "APPUYEZ ICI POUR RECHERCHER",
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: Colors.white70,
+                      fontWeight: FontWeight.bold,
+                      fontSize: 14,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          );
+        }
     }
   }
 
@@ -261,7 +457,14 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
               MaterialPageRoute(
                 builder: (context) => ConfigPage(btService: widget.btService),
               ),
-            ).then((_) => setState(() {})),
+            ).then((_) {
+              setState(() {});
+              // Après dissociation, relancer le scan automatiquement
+              if (!widget.btService.isPaired) {
+                widget.btService.startScan();
+                _listenForProbes();
+              }
+            }),
           ),
         ],
       ),
@@ -332,7 +535,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: Colors.redAccent,
                       padding: const EdgeInsets.symmetric(vertical: 5),
                       child: const Text(
-                        "⚠️ ALARME : TENSION SONDE ANORMALE",
+                        "ALARME : TENSION SONDE ANORMALE",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.white,
@@ -347,7 +550,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: Colors.orange.shade800,
                       padding: const EdgeInsets.symmetric(vertical: 5),
                       child: const Text(
-                        "⚠️ MÉLANGE HYPEROXIQUE (FO2 > 40%)",
+                        "MELANGE HYPEROXIQUE (FO2 > 40%)",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.white,
@@ -362,7 +565,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                       color: Colors.redAccent,
                       padding: const EdgeInsets.symmetric(vertical: 5),
                       child: const Text(
-                        "⚠️ SONDE PÉRIMÉE (PLUS DE 12 MOIS)",
+                        "SONDE PERIMEE (PLUS DE 12 MOIS)",
                         textAlign: TextAlign.center,
                         style: TextStyle(
                           color: Colors.white,
@@ -414,7 +617,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   const Text(
-                                    "O₂",
+                                    "O2",
                                     style: TextStyle(
                                       fontSize: 28,
                                       color: Colors.white70,
@@ -435,6 +638,29 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
                                       fontSize: 13,
                                       color: Colors.white38,
                                     ),
+                                  ),
+                                  // Affichage batterie (masqué si ancien firmware)
+                                  StreamBuilder<int>(
+                                    stream: widget.btService.batteryStream,
+                                    builder: (context, batSnapshot) {
+                                      final bat = batSnapshot.data ??
+                                          widget.btService.batteryLevel;
+                                      if (bat == null) {
+                                        return const SizedBox.shrink();
+                                      }
+                                      return Padding(
+                                        padding: const EdgeInsets.only(top: 4),
+                                        child: Text(
+                                          "Batterie: $bat%",
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: bat > 20
+                                                ? Colors.greenAccent
+                                                : Colors.redAccent,
+                                          ),
+                                        ),
+                                      );
+                                    },
                                   ),
                                 ],
                               ),

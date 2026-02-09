@@ -12,7 +12,8 @@ class SentryBluetoothService {
   static const String charUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
 
   BluetoothDevice? device;
-  String? _savedMac;
+  String? _savedProbeName;
+  String? _savedProbeMac;
   bool _isConnecting = false;
   bool _disposed = false;
   double currentMv = 0.0;
@@ -22,13 +23,29 @@ class SentryBluetoothService {
   DateTime? calibrationDate;
 
   // Modèle de sonde et plages mV dynamiques
-  String sensorModel = "PSR-11-39-MDSX1 (Standard)";
-  double sensorMvMin = 9.0;
+  String sensorModel = "Teledyne R-17MED";
+  double sensorMvMin = 7.0;
   double sensorMvMax = 13.0;
 
   // Buffer des dernières mesures mV (pour vérification stabilité)
   final List<double> _mvBuffer = [];
   List<double> get recentMv => List.unmodifiable(_mvBuffer);
+
+  // Batterie
+  int? _batteryLevel;
+  int? get batteryLevel => _batteryLevel;
+  final StreamController<int> _batteryController =
+      StreamController<int>.broadcast();
+  Stream<int> get batteryStream => _batteryController.stream;
+
+  // Sondes découvertes (pour le dialog de sélection)
+  // Clé = adresse MAC (identifiant unique), valeur = nom d'affichage
+  final Map<String, String> _discoveredProbes = {};
+  final Map<String, BluetoothDevice> _discoveredDeviceMap = {};
+  final StreamController<Map<String, String>> _discoveredProbesController =
+      StreamController<Map<String, String>>.broadcast();
+  Stream<Map<String, String>> get discoveredProbesStream =>
+      _discoveredProbesController.stream;
 
   final StreamController<double> _mvController =
       StreamController<double>.broadcast();
@@ -48,7 +65,11 @@ class SentryBluetoothService {
   Timer? _reconnectTimer;
   Timer? _mvWatchdog;
 
-  String? get associatedMac => _savedMac;
+  String? get associatedProbeName => _savedProbeName;
+  String? get associatedProbeMac => _savedProbeMac;
+
+  /// Vrai si une sonde est associée (verrouillée par MAC).
+  bool get isPaired => _savedProbeMac != null;
 
   void _setState(SentryConnectionState state) {
     if (_disposed) return;
@@ -60,7 +81,9 @@ class SentryBluetoothService {
   Future<void> init() async {
     try {
       final prefs = await SharedPreferences.getInstance();
-      _savedMac = prefs.getString('associated_mac');
+
+      _savedProbeMac = prefs.getString('associated_probe_mac');
+      _savedProbeName = prefs.getString('associated_probe_name');
       calMv = prefs.getDouble('cal_mv') ?? 10.5;
       ppo2Limit = prefs.getDouble('ppo2_limit') ?? 1.4;
 
@@ -147,11 +170,16 @@ class SentryBluetoothService {
 
     try {
       final prefs = await SharedPreferences.getInstance();
-      await prefs.remove('associated_mac');
+      await prefs.remove('associated_probe_mac');
+      await prefs.remove('associated_probe_name');
     } catch (e) {
       // La déconnexion doit continuer même si le storage échoue
     }
-    _savedMac = null;
+    _savedProbeMac = null;
+    _savedProbeName = null;
+    _discoveredProbes.clear();
+    _discoveredDeviceMap.clear();
+    _batteryLevel = null;
     if (device != null) {
       await device!.disconnect();
     }
@@ -160,7 +188,22 @@ class SentryBluetoothService {
     _setState(SentryConnectionState.disconnected);
   }
 
-  /// Démarre le scan Bluetooth (Ciblé ou Global)
+  /// Appelée par le UI quand l'utilisateur choisit une sonde par son MAC
+  Future<void> selectProbe(String mac) async {
+    final device = _discoveredDeviceMap[mac];
+    final name = _discoveredProbes[mac] ?? "O2-SENTRY";
+    if (device != null) {
+      _connectToDevice(device, name);
+    }
+  }
+
+  /// Vérifie si un appareil BLE advertise notre service UUID
+  bool _hasOurService(ScanResult r) {
+    return r.advertisementData.serviceUuids
+        .any((uuid) => uuid.toString().toLowerCase() == serviceUuid);
+  }
+
+  /// Démarre le scan Bluetooth
   void startScan() async {
     if (_isConnecting) return;
     if (_disposed) return;
@@ -176,30 +219,85 @@ class SentryBluetoothService {
       ].request();
     }
 
+    // 1. Vérifier les appareils bonded (Android) pour connexion rapide par MAC
+    if (_savedProbeMac != null && Platform.isAndroid) {
+      try {
+        final bondedDevices = await FlutterBluePlus.bondedDevices;
+        for (var d in bondedDevices) {
+          if (d.remoteId.str == _savedProbeMac) {
+            final name = d.platformName.isNotEmpty
+                ? d.platformName
+                : _savedProbeName ?? "O2-SENTRY";
+            _connectToDevice(d, name);
+            return;
+          }
+        }
+      } catch (_) {}
+    }
+
     await FlutterBluePlus.stopScan();
 
+    // Vider les sondes découvertes pour un scan frais
+    _discoveredProbes.clear();
+    _discoveredDeviceMap.clear();
+
+    // 2. Scan BLE — détection par nom ET par UUID de service
+    //    Dédupliqué par adresse MAC pour éviter les doublons
     _scanSubscription?.cancel();
     _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
       for (ScanResult r in results) {
-        String devName = r.device.platformName.toUpperCase();
-        String devId = r.device.remoteId.toString();
-
-        // 1. Si on connaît déjà la sonde, on ne se connecte qu'à elle
-        if (_savedMac != null) {
-          if (devId == _savedMac) {
-            _connectToDevice(r.device);
-            FlutterBluePlus.stopScan();
-          }
+        String devName = r.advertisementData.advName;
+        if (devName.isEmpty) {
+          devName = r.device.platformName;
         }
-        // 2. Sinon, on cherche une sonde O2-SENTRY pour l'association
-        else if (devName.contains("O2-SENTRY")) {
-          _connectToDevice(r.device);
-          FlutterBluePlus.stopScan();
+
+        bool hasService = _hasOurService(r);
+        final mac = r.device.remoteId.str;
+
+        // Ni nom ni service connu → ignorer
+        if (devName.isEmpty && !hasService) continue;
+
+        if (_savedProbeMac != null) {
+          // Sonde associée → auto-connexion UNIQUEMENT par MAC
+          if (mac == _savedProbeMac) {
+            final name = devName.isNotEmpty
+                ? devName
+                : _savedProbeName ?? "O2-SENTRY";
+            _connectToDevice(r.device, name);
+            FlutterBluePlus.stopScan();
+            return;
+          }
+        } else {
+          // Mode découverte → collecter O2-SENTRY, dédupliqué par MAC
+          bool isO2Sentry =
+              devName.toUpperCase().startsWith("O2-SENTRY") || hasService;
+          if (isO2Sentry) {
+            String displayName =
+                devName.isNotEmpty ? devName : "O2-SENTRY [$mac]";
+
+            final existingName = _discoveredProbes[mac];
+            if (existingName == null) {
+              // Nouveau device
+              _discoveredProbes[mac] = displayName;
+              _discoveredDeviceMap[mac] = r.device;
+              _discoveredProbesController.add(Map.of(_discoveredProbes));
+            } else if (existingName.contains('[') &&
+                !displayName.contains('[')) {
+              // Nom réel reçu → remplacer le placeholder MAC
+              _discoveredProbes[mac] = displayName;
+              _discoveredDeviceMap[mac] = r.device;
+              _discoveredProbesController.add(Map.of(_discoveredProbes));
+            }
+          }
         }
       }
     });
 
-    await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
+    // Mode lowLatency = scan plus rapide (duty cycle max)
+    await FlutterBluePlus.startScan(
+      timeout: const Duration(seconds: 15),
+      androidScanMode: AndroidScanMode.lowLatency,
+    );
 
     // Après le timeout du scan, si toujours en scanning → disconnected
     if (_currentState == SentryConnectionState.scanning) {
@@ -209,7 +307,7 @@ class SentryBluetoothService {
   }
 
   /// Gère la connexion à l'appareil
-  void _connectToDevice(BluetoothDevice d) async {
+  void _connectToDevice(BluetoothDevice d, String probeName) async {
     if (_isConnecting) return;
     _isConnecting = true;
     _setState(SentryConnectionState.connecting);
@@ -235,14 +333,21 @@ class SentryBluetoothService {
         }
       });
 
-      // Sauvegarde la MAC si c'est une nouvelle association
-      if (_savedMac == null) {
-        _savedMac = d.remoteId.toString();
+      // Sauvegarder l'association par MAC + nom (affichage uniquement)
+      final mac = d.remoteId.str;
+      final hasGoodName = probeName.isNotEmpty && !probeName.contains('[');
+
+      if (_savedProbeMac != mac || (hasGoodName && probeName != _savedProbeName)) {
+        _savedProbeMac = mac;
+        if (hasGoodName) _savedProbeName = probeName;
         try {
           final prefs = await SharedPreferences.getInstance();
-          await prefs.setString('associated_mac', _savedMac!);
+          await prefs.setString('associated_probe_mac', mac);
+          if (_savedProbeName != null) {
+            await prefs.setString('associated_probe_name', _savedProbeName!);
+          }
         } catch (e) {
-          // Continuer même si la sauvegarde MAC échoue
+          // Continuer même si la sauvegarde échoue
         }
       }
       _discoverServices(d);
@@ -266,18 +371,35 @@ class SentryBluetoothService {
               _charSubscription = c.onValueReceived.listen((data) {
                 try {
                   // Décodage du message envoyé par l'ESP32
+                  // Format attendu : "mV,batterie" ou "mV" (rétrocompat)
                   String raw = utf8.decode(data).trim();
-                  double? val = double.tryParse(raw);
-                  if (val != null) {
-                    currentMv = val;
-                    _mvController.add(val);
+                  double? mv;
+                  int? battery;
+
+                  if (raw.contains(',')) {
+                    final parts = raw.split(',');
+                    mv = double.tryParse(parts[0]);
+                    if (parts.length >= 2) {
+                      battery = int.tryParse(parts[1]);
+                    }
+                  } else {
+                    mv = double.tryParse(raw);
+                  }
+
+                  if (mv != null) {
+                    currentMv = mv;
+                    _mvController.add(mv);
                     _resetMvWatchdog();
 
                     // Buffer circulaire des 10 dernières mesures
-                    _mvBuffer.add(val);
+                    _mvBuffer.add(mv);
                     if (_mvBuffer.length > 10) {
                       _mvBuffer.removeAt(0);
                     }
+                  }
+                  if (battery != null && battery >= 0 && battery <= 100) {
+                    _batteryLevel = battery;
+                    _batteryController.add(battery);
                   }
                 } catch (e) {
                   // Erreur de parsing ignorée pour la stabilité
@@ -312,15 +434,17 @@ class SentryBluetoothService {
     });
   }
 
-  /// Planifie une tentative de reconnexion après 3 secondes
+  /// Planifie une tentative de reconnexion
+  /// - 2s si sonde associée par MAC (reconnexion rapide)
+  /// - Pas de retry auto si aucune sonde associée
   void _scheduleReconnect() {
     if (_disposed) return;
-    if (_savedMac == null) return;
+    if (_savedProbeMac == null) return;
     if (_reconnectTimer?.isActive == true) return;
 
-    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+    _reconnectTimer = Timer(const Duration(seconds: 2), () {
       if (!_disposed &&
-          _savedMac != null &&
+          _savedProbeMac != null &&
           _currentState != SentryConnectionState.connected) {
         startScan();
       }
@@ -337,5 +461,7 @@ class SentryBluetoothService {
     _scanSubscription?.cancel();
     _mvController.close();
     _stateController.close();
+    _batteryController.close();
+    _discoveredProbesController.close();
   }
 }

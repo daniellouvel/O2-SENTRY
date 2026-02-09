@@ -3,6 +3,69 @@ import 'dart:math';
 import 'package:flutter/material.dart';
 import '../services/bluetooth_service.dart';
 
+class SensorInfo {
+  final String name;
+  final String manufacturer;
+  final double mvMin;
+  final double mvMax;
+  final int lifespanMonths;
+  final String connector;
+
+  const SensorInfo({
+    required this.name,
+    required this.manufacturer,
+    required this.mvMin,
+    required this.mvMax,
+    required this.lifespanMonths,
+    required this.connector,
+  });
+}
+
+const List<SensorInfo> sensorLibrary = [
+  SensorInfo(
+    name: "Teledyne R-17MED",
+    manufacturer: "Teledyne / AII",
+    mvMin: 7.0, mvMax: 13.0,
+    lifespanMonths: 24,
+    connector: "Molex 3-pin",
+  ),
+  SensorInfo(
+    name: "Teledyne R-22MED",
+    manufacturer: "Teledyne / AII",
+    mvMin: 8.0, mvMax: 13.0,
+    lifespanMonths: 36,
+    connector: "Molex 3-pin",
+  ),
+  SensorInfo(
+    name: "AII PSR-11-39-MDSX1",
+    manufacturer: "Analytical Industries",
+    mvMin: 9.0, mvMax: 13.0,
+    lifespanMonths: 24,
+    connector: "Molex 3-pin",
+  ),
+  SensorInfo(
+    name: "Maxtec MAX-12",
+    manufacturer: "Maxtec",
+    mvMin: 9.0, mvMax: 13.0,
+    lifespanMonths: 24,
+    connector: "Molex 3-pin",
+  ),
+  SensorInfo(
+    name: "Vandagraph VN202",
+    manufacturer: "Vandagraph",
+    mvMin: 7.0, mvMax: 13.0,
+    lifespanMonths: 18,
+    connector: "Molex 3-pin",
+  ),
+  SensorInfo(
+    name: "AII SF-01",
+    manufacturer: "Analytical Industries",
+    mvMin: 7.0, mvMax: 13.0,
+    lifespanMonths: 12,
+    connector: "Molex 3-pin",
+  ),
+];
+
 class ConfigPage extends StatefulWidget {
   final SentryBluetoothService btService;
   const ConfigPage({super.key, required this.btService});
@@ -12,24 +75,37 @@ class ConfigPage extends StatefulWidget {
 }
 
 class _ConfigPageState extends State<ConfigPage> {
-  final Map<String, List<double>> sensorSpecs = {
-    "PSR-11-39-MDSX1 (Standard)": [9.0, 13.0],
-    "AII SF-01 (Analytical Industries)": [7.0, 13.0],
-    "Maxtec MAX-12": [9.0, 13.0],
-    "Custom (Manuel)": [0.0, 0.0],
-  };
+  static const String _customKey = "Custom (Manuel)";
 
   late String selectedSensor;
   StreamSubscription? _sub;
+  late TextEditingController _customMinCtrl;
+  late TextEditingController _customMaxCtrl;
+
+  /// Noms pour le dropdown (sondes + Custom)
+  List<String> get _sensorNames =>
+      [...sensorLibrary.map((s) => s.name), _customKey];
+
+  /// Retourne le SensorInfo ou null si Custom
+  SensorInfo? _getSelectedInfo() {
+    try {
+      return sensorLibrary.firstWhere((s) => s.name == selectedSensor);
+    } catch (_) {
+      return null;
+    }
+  }
 
   @override
   void initState() {
     super.initState();
-    // Charger le modèle sauvegardé, ou le premier par défaut
     final saved = widget.btService.sensorModel;
-    selectedSensor = sensorSpecs.containsKey(saved)
-        ? saved
-        : sensorSpecs.keys.first;
+    selectedSensor = _sensorNames.contains(saved) ? saved : _sensorNames.first;
+    _customMinCtrl = TextEditingController(
+      text: widget.btService.sensorMvMin.toStringAsFixed(1),
+    );
+    _customMaxCtrl = TextEditingController(
+      text: widget.btService.sensorMvMax.toStringAsFixed(1),
+    );
     _sub = widget.btService.mvStream.listen((_) {
       if (mounted) setState(() {});
     });
@@ -38,6 +114,8 @@ class _ConfigPageState extends State<ConfigPage> {
   @override
   void dispose() {
     _sub?.cancel();
+    _customMinCtrl.dispose();
+    _customMaxCtrl.dispose();
     super.dispose();
   }
 
@@ -103,6 +181,160 @@ class _ConfigPageState extends State<ConfigPage> {
         false;
   }
 
+  Widget _buildSensorInfoCard(SensorInfo info) {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _infoRow("Fabricant", info.manufacturer),
+          const SizedBox(height: 6),
+          _infoRow("Plage mV", "${info.mvMin} – ${info.mvMax} mV"),
+          const SizedBox(height: 6),
+          _infoRow("Durée de vie", "${info.lifespanMonths} mois"),
+          const SizedBox(height: 6),
+          _infoRow("Connecteur", info.connector),
+        ],
+      ),
+    );
+  }
+
+  Widget _infoRow(String label, String value) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SizedBox(
+          width: 100,
+          child: Text(
+            label,
+            style: const TextStyle(color: Colors.white38, fontSize: 12),
+          ),
+        ),
+        Expanded(
+          child: Text(
+            value,
+            style: const TextStyle(color: Colors.white, fontSize: 12),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCustomFields() {
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.all(15),
+      decoration: BoxDecoration(
+        color: const Color(0xFF1E1E1E),
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: Colors.white10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text(
+            "Plages mV personnalisées",
+            style: TextStyle(color: Colors.white70, fontSize: 13),
+          ),
+          const SizedBox(height: 12),
+          Row(
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _customMinCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: "mV Min",
+                    labelStyle: TextStyle(color: Colors.white38),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent),
+                    ),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 15),
+              Expanded(
+                child: TextField(
+                  controller: _customMaxCtrl,
+                  keyboardType:
+                      const TextInputType.numberWithOptions(decimal: true),
+                  style: const TextStyle(color: Colors.white),
+                  decoration: const InputDecoration(
+                    labelText: "mV Max",
+                    labelStyle: TextStyle(color: Colors.white38),
+                    enabledBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.white24),
+                    ),
+                    focusedBorder: OutlineInputBorder(
+                      borderSide: BorderSide(color: Colors.blueAccent),
+                    ),
+                    contentPadding:
+                        EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.blueAccent,
+                foregroundColor: Colors.white,
+              ),
+              onPressed: () {
+                final minVal = double.tryParse(_customMinCtrl.text);
+                final maxVal = double.tryParse(_customMaxCtrl.text);
+
+                if (minVal == null || maxVal == null) {
+                  _showError("Erreur", "Valeurs invalides.");
+                  return;
+                }
+                if (minVal < 1.0 || maxVal > 25.0) {
+                  _showError(
+                    "Erreur",
+                    "Plage autorisée : min >= 1.0, max <= 25.0 mV.",
+                  );
+                  return;
+                }
+                if (minVal >= maxVal) {
+                  _showError("Erreur", "Le min doit être inférieur au max.");
+                  return;
+                }
+
+                widget.btService.saveSensorModel(_customKey, minVal, maxVal);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      "Plage custom appliquée : $minVal – $maxVal mV",
+                    ),
+                  ),
+                );
+              },
+              child: const Text("APPLIQUER"),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     bool isExpired = false;
@@ -165,25 +397,38 @@ class _ConfigPageState extends State<ConfigPage> {
               isExpanded: true,
               dropdownColor: const Color(0xFF1E1E1E),
               style: const TextStyle(color: Colors.white),
-              items: sensorSpecs.keys
+              items: _sensorNames
                   .map((s) => DropdownMenuItem(value: s, child: Text(s)))
                   .toList(),
-              onChanged: (v) {
-                setState(() => selectedSensor = v!);
-                final specs = sensorSpecs[v]!;
-                // "Custom (Manuel)" a [0.0, 0.0] : garder les plages précédentes
-                if (specs[0] > 0 && specs[1] > 0) {
-                  widget.btService.saveSensorModel(v!, specs[0], specs[1]);
-                } else {
-                  // Sauvegarder seulement le nom, pas les plages
+              onChanged: (v) async {
+                if (v == null || v == selectedSensor) return;
+                final info = sensorLibrary
+                    .where((s) => s.name == v)
+                    .firstOrNull;
+                final plage = info != null
+                    ? "${info.mvMin} – ${info.mvMax} mV"
+                    : "personnalisée";
+                final ok = await _confirm(
+                  "Changer de sonde",
+                  "Passer à « $v » ?\n"
+                      "Plage alarme : $plage\n\n"
+                      "Les seuils d'alarme seront mis à jour.",
+                );
+                if (!ok) return;
+                setState(() => selectedSensor = v);
+                if (info != null) {
                   widget.btService.saveSensorModel(
-                    v!,
-                    widget.btService.sensorMvMin,
-                    widget.btService.sensorMvMax,
+                    v, info.mvMin, info.mvMax,
                   );
                 }
               },
             ),
+
+            // FICHE INFO SONDE ou CHAMPS CUSTOM
+            if (selectedSensor != _customKey && _getSelectedInfo() != null)
+              _buildSensorInfoCard(_getSelectedInfo()!),
+            if (selectedSensor == _customKey) _buildCustomFields(),
+            const SizedBox(height: 10),
 
             // 3. DATE D'INSTALLATION (Sous la sonde)
             ListTile(
@@ -276,12 +521,15 @@ class _ConfigPageState extends State<ConfigPage> {
                 onPressed: () async {
                   final currentMv = widget.btService.currentMv;
 
-                  // Vérification 1 : plage mV valide (2.3)
-                  if (currentMv < 5.0 || currentMv > 16.0) {
+                  // Vérification 1 : plage mV valide selon le modèle de sonde
+                  final mvMin = widget.btService.sensorMvMin;
+                  final mvMax = widget.btService.sensorMvMax;
+                  if (currentMv < mvMin || currentMv > mvMax) {
                     _showError(
                       "Calibration impossible",
                       "Tension hors plage (${currentMv.toStringAsFixed(2)} mV).\n"
-                          "La tension doit être entre 5.0 et 16.0 mV.",
+                          "Plage attendue pour ${widget.btService.sensorModel} : "
+                          "$mvMin – $mvMax mV.",
                     );
                     return;
                   }
@@ -346,17 +594,97 @@ class _ConfigPageState extends State<ConfigPage> {
                     mainAxisAlignment: MainAxisAlignment.spaceBetween,
                     children: [
                       const Text(
-                        "ID MAC :",
+                        "Sonde associée :",
                         style: TextStyle(color: Colors.white70),
                       ),
-                      Text(
-                        widget.btService.associatedMac ?? "Aucun",
-                        style: const TextStyle(
-                          color: Colors.grey,
-                          fontSize: 11,
-                        ),
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.btService.isPaired)
+                            const Padding(
+                              padding: EdgeInsets.only(right: 4),
+                              child: Icon(
+                                Icons.lock,
+                                color: Colors.greenAccent,
+                                size: 14,
+                              ),
+                            ),
+                          Text(
+                            widget.btService.associatedProbeName ?? "Aucune",
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 11,
+                            ),
+                          ),
+                        ],
                       ),
                     ],
+                  ),
+                  if (widget.btService.associatedProbeMac != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "MAC :",
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Text(
+                            widget.btService.associatedProbeMac!,
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  StreamBuilder<int>(
+                    stream: widget.btService.batteryStream,
+                    builder: (context, batSnapshot) {
+                      final bat = batSnapshot.data ??
+                          widget.btService.batteryLevel;
+                      if (bat == null) return const SizedBox.shrink();
+                      IconData batIcon;
+                      Color batColor;
+                      if (bat > 60) {
+                        batIcon = Icons.battery_full;
+                        batColor = Colors.greenAccent;
+                      } else if (bat > 20) {
+                        batIcon = Icons.battery_3_bar;
+                        batColor = Colors.orangeAccent;
+                      } else {
+                        batIcon = Icons.battery_alert;
+                        batColor = Colors.redAccent;
+                      }
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "Batterie :",
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Icon(batIcon, color: batColor, size: 18),
+                              const SizedBox(width: 4),
+                              Text(
+                                "$bat%",
+                                style: TextStyle(
+                                  color: batColor,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
                   ),
                   const SizedBox(height: 10),
                   StreamBuilder<SentryConnectionState>(
