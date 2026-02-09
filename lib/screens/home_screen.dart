@@ -29,6 +29,84 @@ class _HomeScreenState extends State<HomeScreen> {
     super.dispose();
   }
 
+  Widget _buildConnectionBanner(SentryConnectionState state) {
+    switch (state) {
+      case SentryConnectionState.connected:
+        return const SizedBox.shrink();
+      case SentryConnectionState.scanning:
+        return Container(
+          width: double.infinity,
+          color: Colors.cyan.shade800,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: const Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SizedBox(
+                width: 14,
+                height: 14,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              ),
+              SizedBox(width: 10),
+              Text(
+                "RECHERCHE DE LA SONDE...",
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: Colors.white,
+                  fontWeight: FontWeight.bold,
+                  fontSize: 12,
+                ),
+              ),
+            ],
+          ),
+        );
+      case SentryConnectionState.connecting:
+        return Container(
+          width: double.infinity,
+          color: Colors.orange.shade800,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: const Text(
+            "CONNEXION EN COURS...",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+        );
+      case SentryConnectionState.disconnected:
+        return Container(
+          width: double.infinity,
+          color: Colors.red.shade800,
+          padding: const EdgeInsets.symmetric(vertical: 6),
+          child: const Text(
+            "SONDE DÉCONNECTÉE",
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontWeight: FontWeight.bold,
+              fontSize: 12,
+            ),
+          ),
+        );
+    }
+  }
+
+  Color _dotColor(SentryConnectionState state) {
+    switch (state) {
+      case SentryConnectionState.connected:
+        return Colors.greenAccent;
+      case SentryConnectionState.scanning:
+      case SentryConnectionState.connecting:
+        return Colors.orangeAccent;
+      case SentryConnectionState.disconnected:
+        return Colors.redAccent;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -39,9 +117,32 @@ class _HomeScreenState extends State<HomeScreen> {
         elevation: 0,
         centerTitle: true,
         leading: Center(
-          child: Text(
-            appVersion,
-            style: const TextStyle(fontSize: 10, color: Colors.grey),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Text(
+                appVersion,
+                style: const TextStyle(fontSize: 10, color: Colors.grey),
+              ),
+              const SizedBox(width: 4),
+              StreamBuilder<SentryConnectionState>(
+                stream: widget.btService.connectionStateStream,
+                initialData: widget.btService.currentState,
+                builder: (context, snapshot) {
+                  return Container(
+                    width: 6,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: _dotColor(
+                        snapshot.data ?? SentryConnectionState.disconnected,
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ],
           ),
         ),
         actions: [
@@ -65,120 +166,130 @@ class _HomeScreenState extends State<HomeScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<double>(
-        stream: widget.btService.mvStream,
-        builder: (context, snapshot) {
-          double mv = snapshot.hasData ? snapshot.data! : 0.0;
-          double fo2 = O2MathEngine.calculateFO2(mv, widget.btService.calMv);
-          double mod = O2MathEngine.calculateMOD(
-            fo2,
-            widget.btService.ppo2Limit,
-          );
+      body: StreamBuilder<SentryConnectionState>(
+        stream: widget.btService.connectionStateStream,
+        initialData: widget.btService.currentState,
+        builder: (context, connSnapshot) {
+          final connState =
+              connSnapshot.data ?? SentryConnectionState.disconnected;
+          return StreamBuilder<double>(
+            stream: widget.btService.mvStream,
+            builder: (context, snapshot) {
+              double mv = snapshot.hasData ? snapshot.data! : 0.0;
+              double fo2 =
+                  O2MathEngine.calculateFO2(mv, widget.btService.calMv);
+              double mod = O2MathEngine.calculateMOD(
+                fo2,
+                widget.btService.ppo2Limit,
+              );
 
-          // Alarme tension sonde (basée sur les réglages standards)
-          bool mvAlarm = (mv < 7.0 || mv > 14.0) && snapshot.hasData;
+              // Alarme tension sonde (basée sur les réglages standards)
+              bool mvAlarm = (mv < 7.0 || mv > 14.0) && snapshot.hasData;
 
-          return Column(
-            children: [
-              if (mvAlarm)
-                Container(
-                  width: double.infinity,
-                  color: Colors.redAccent,
-                  padding: const EdgeInsets.symmetric(vertical: 5),
-                  child: const Text(
-                    "⚠️ ALARME : TENSION SONDE ANORMALE",
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      color: Colors.white,
-                      fontWeight: FontWeight.bold,
-                      fontSize: 12,
+              return Column(
+                children: [
+                  _buildConnectionBanner(connState),
+                  if (mvAlarm)
+                    Container(
+                      width: double.infinity,
+                      color: Colors.redAccent,
+                      padding: const EdgeInsets.symmetric(vertical: 5),
+                      child: const Text(
+                        "⚠️ ALARME : TENSION SONDE ANORMALE",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Colors.white,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-              Expanded(
-                child: Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    crossAxisAlignment: CrossAxisAlignment.center,
-                    children: [
-                      // JAUGE CIRCULAIRE
-                      Stack(
-                        alignment: Alignment.center,
+                  Expanded(
+                    child: Center(
+                      child: Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        crossAxisAlignment: CrossAxisAlignment.center,
                         children: [
-                          SizedBox(
-                            width: 280,
-                            height: 280,
-                            child: CircularProgressIndicator(
-                              value: (fo2 / 100).clamp(0, 1),
-                              strokeWidth: 12,
-                              backgroundColor: Colors.white10,
-                              valueColor: AlwaysStoppedAnimation(
-                                fo2 > 40
-                                    ? Colors.orange
-                                    : const Color(0xFF00E5FF),
-                              ),
-                            ),
-                          ),
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
+                          // JAUGE CIRCULAIRE
+                          Stack(
+                            alignment: Alignment.center,
                             children: [
-                              const Text(
-                                "O₂",
-                                style: TextStyle(
-                                  fontSize: 28,
-                                  color: Colors.white70,
+                              SizedBox(
+                                width: 280,
+                                height: 280,
+                                child: CircularProgressIndicator(
+                                  value: (fo2 / 100).clamp(0, 1),
+                                  strokeWidth: 12,
+                                  backgroundColor: Colors.white10,
+                                  valueColor: AlwaysStoppedAnimation(
+                                    fo2 > 40
+                                        ? Colors.orange
+                                        : const Color(0xFF00E5FF),
+                                  ),
                                 ),
                               ),
-                              Text(
-                                "${fo2.toStringAsFixed(1)}%",
-                                style: const TextStyle(
-                                  fontSize: 65,
-                                  fontWeight: FontWeight.bold,
-                                  color: Colors.white,
-                                ),
+                              Column(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text(
+                                    "O₂",
+                                    style: TextStyle(
+                                      fontSize: 28,
+                                      color: Colors.white70,
+                                    ),
+                                  ),
+                                  Text(
+                                    "${fo2.toStringAsFixed(1)}%",
+                                    style: const TextStyle(
+                                      fontSize: 65,
+                                      fontWeight: FontWeight.bold,
+                                      color: Colors.white,
+                                    ),
+                                  ),
+                                ],
                               ),
                             ],
                           ),
+                          const SizedBox(height: 60),
+                          // BLOC MOD
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              vertical: 20,
+                              horizontal: 40,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.white.withOpacity(0.05),
+                              borderRadius: BorderRadius.circular(20),
+                            ),
+                            child: Column(
+                              children: [
+                                Text(
+                                  "MOD (${widget.btService.ppo2Limit})",
+                                  style: const TextStyle(
+                                    color: Colors.grey,
+                                    fontSize: 16,
+                                    letterSpacing: 1.5,
+                                  ),
+                                ),
+                                const SizedBox(height: 10),
+                                Text(
+                                  "${mod.toStringAsFixed(0)}m",
+                                  style: const TextStyle(
+                                    fontSize: 80,
+                                    fontWeight: FontWeight.bold,
+                                    color: Colors.orangeAccent,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
                         ],
                       ),
-                      const SizedBox(height: 60),
-                      // BLOC MOD
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          vertical: 20,
-                          horizontal: 40,
-                        ),
-                        decoration: BoxDecoration(
-                          color: Colors.white.withOpacity(0.05),
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Column(
-                          children: [
-                            Text(
-                              "MOD (${widget.btService.ppo2Limit})",
-                              style: const TextStyle(
-                                color: Colors.grey,
-                                fontSize: 16,
-                                letterSpacing: 1.5,
-                              ),
-                            ),
-                            const SizedBox(height: 10),
-                            Text(
-                              "${mod.toStringAsFixed(0)}m",
-                              style: const TextStyle(
-                                fontSize: 80,
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orangeAccent,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                    ),
                   ),
-                ),
-              ),
-            ],
+                ],
+              );
+            },
           );
         },
       ),

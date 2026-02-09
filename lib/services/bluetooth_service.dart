@@ -5,6 +5,8 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+enum SentryConnectionState { disconnected, scanning, connecting, connected }
+
 class SentryBluetoothService {
   static const String serviceUuid = "4fafc201-1fb5-459e-8fcc-c5c9c331914b";
   static const String charUuid = "beb5483e-36e1-4688-b7f5-ea07361b26a8";
@@ -12,6 +14,7 @@ class SentryBluetoothService {
   BluetoothDevice? device;
   String? _savedMac;
   bool _isConnecting = false;
+  bool _disposed = false;
   double currentMv = 0.0;
   double calMv = 10.5;
   double ppo2Limit = 1.4;
@@ -21,9 +24,26 @@ class SentryBluetoothService {
       StreamController<double>.broadcast();
   Stream<double> get mvStream => _mvController.stream;
 
+  final StreamController<SentryConnectionState> _stateController =
+      StreamController<SentryConnectionState>.broadcast();
+  Stream<SentryConnectionState> get connectionStateStream =>
+      _stateController.stream;
+
+  SentryConnectionState _currentState = SentryConnectionState.disconnected;
+  SentryConnectionState get currentState => _currentState;
+
   StreamSubscription? _scanSubscription;
+  StreamSubscription? _deviceStateSubscription;
+  StreamSubscription? _charSubscription;
+  Timer? _reconnectTimer;
 
   String? get associatedMac => _savedMac;
+
+  void _setState(SentryConnectionState state) {
+    if (_disposed) return;
+    _currentState = state;
+    _stateController.add(state);
+  }
 
   /// Initialisation : Charge toutes les données sauvegardées
   Future<void> init() async {
@@ -61,17 +81,31 @@ class SentryBluetoothService {
 
   /// Supprime l'association et déconnecte la sonde
   Future<void> forgetDevice() async {
+    _reconnectTimer?.cancel();
+    _reconnectTimer = null;
+    _deviceStateSubscription?.cancel();
+    _deviceStateSubscription = null;
+    _charSubscription?.cancel();
+    _charSubscription = null;
+
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove('associated_mac');
     _savedMac = null;
     if (device != null) {
       await device!.disconnect();
     }
+    device = null;
+    _isConnecting = false;
+    _setState(SentryConnectionState.disconnected);
   }
 
   /// Démarre le scan Bluetooth (Ciblé ou Global)
   void startScan() async {
     if (_isConnecting) return;
+    if (_disposed) return;
+    if (_currentState == SentryConnectionState.connected) return;
+
+    _setState(SentryConnectionState.scanning);
 
     if (Platform.isAndroid) {
       await [
@@ -83,6 +117,7 @@ class SentryBluetoothService {
 
     await FlutterBluePlus.stopScan();
 
+    _scanSubscription?.cancel();
     _scanSubscription = FlutterBluePlus.onScanResults.listen((results) {
       for (ScanResult r in results) {
         String devName = r.device.platformName.toUpperCase();
@@ -104,15 +139,38 @@ class SentryBluetoothService {
     });
 
     await FlutterBluePlus.startScan(timeout: const Duration(seconds: 15));
+
+    // Après le timeout du scan, si toujours en scanning → disconnected
+    if (_currentState == SentryConnectionState.scanning) {
+      _setState(SentryConnectionState.disconnected);
+      _scheduleReconnect();
+    }
   }
 
   /// Gère la connexion à l'appareil
   void _connectToDevice(BluetoothDevice d) async {
     if (_isConnecting) return;
     _isConnecting = true;
+    _setState(SentryConnectionState.connecting);
     try {
       await d.connect();
       device = d;
+
+      // Écouter les changements d'état de connexion du device
+      _deviceStateSubscription?.cancel();
+      _deviceStateSubscription = d.connectionState.listen((state) {
+        if (state == BluetoothConnectionState.disconnected) {
+          // Ne réagir que si on était connecté (évite les faux événements
+          // pendant la phase de connexion/découverte de services)
+          if (_currentState == SentryConnectionState.connected) {
+            _setState(SentryConnectionState.disconnected);
+            _charSubscription?.cancel();
+            _charSubscription = null;
+            _isConnecting = false;
+            _scheduleReconnect();
+          }
+        }
+      });
 
       // Sauvegarde la MAC si c'est une nouvelle association
       if (_savedMac == null) {
@@ -123,6 +181,8 @@ class SentryBluetoothService {
       _discoverServices(d);
     } catch (e) {
       _isConnecting = false;
+      _setState(SentryConnectionState.disconnected);
+      _scheduleReconnect();
     }
   }
 
@@ -134,7 +194,8 @@ class SentryBluetoothService {
         for (var c in s.characteristics) {
           if (c.uuid.toString().toLowerCase() == charUuid) {
             await c.setNotifyValue(true);
-            c.onValueReceived.listen((data) {
+            _charSubscription?.cancel();
+            _charSubscription = c.onValueReceived.listen((data) {
               try {
                 // Décodage du message envoyé par l'ESP32
                 String raw = utf8.decode(data).trim();
@@ -152,5 +213,32 @@ class SentryBluetoothService {
       }
     }
     _isConnecting = false;
+    _setState(SentryConnectionState.connected);
+  }
+
+  /// Planifie une tentative de reconnexion après 3 secondes
+  void _scheduleReconnect() {
+    if (_disposed) return;
+    if (_savedMac == null) return;
+    if (_reconnectTimer?.isActive == true) return;
+
+    _reconnectTimer = Timer(const Duration(seconds: 3), () {
+      if (!_disposed &&
+          _savedMac != null &&
+          _currentState != SentryConnectionState.connected) {
+        startScan();
+      }
+    });
+  }
+
+  /// Libère toutes les ressources
+  void dispose() {
+    _disposed = true;
+    _reconnectTimer?.cancel();
+    _deviceStateSubscription?.cancel();
+    _charSubscription?.cancel();
+    _scanSubscription?.cancel();
+    _mvController.close();
+    _stateController.close();
   }
 }

@@ -282,6 +282,66 @@ class _ConfigPageState extends State<ConfigPage> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 10),
+                  StreamBuilder<SentryConnectionState>(
+                    stream: widget.btService.connectionStateStream,
+                    initialData: widget.btService.currentState,
+                    builder: (context, snapshot) {
+                      final state =
+                          snapshot.data ?? SentryConnectionState.disconnected;
+                      String label;
+                      Color color;
+                      switch (state) {
+                        case SentryConnectionState.connected:
+                          label = "Connecté";
+                          color = Colors.greenAccent;
+                          break;
+                        case SentryConnectionState.scanning:
+                          label = "Recherche...";
+                          color = Colors.cyan;
+                          break;
+                        case SentryConnectionState.connecting:
+                          label = "Connexion...";
+                          color = Colors.orangeAccent;
+                          break;
+                        case SentryConnectionState.disconnected:
+                          label = "Déconnecté";
+                          color = Colors.redAccent;
+                          break;
+                      }
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "Statut :",
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: color,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  color: color,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
                   const SizedBox(height: 20),
                   SizedBox(
                     width: double.infinity,
