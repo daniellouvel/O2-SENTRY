@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'compatible_printers_page.dart';
 
 class HelpPage extends StatelessWidget {
   const HelpPage({super.key});
@@ -35,6 +36,38 @@ class HelpPage extends StatelessWidget {
               "4. MAINTENANCE",
               "Une sonde galvanique a une durée de vie limitée (environ 12-18 mois). Surveillez la date d'installation dans l'onglet configuration. Si la tension à l'air tombe en dessous de 8-9 mV, prévoyez son remplacement.",
               Icons.build_circle_outlined,
+            ),
+            _buildSection(
+              "5. IMPRESSION ETIQUETTE",
+              "Appuyez sur l'icône imprimante dans la barre du haut pour imprimer une étiquette autocollante waterproof avec :\n"
+              "• FO2 (pourcentage d'oxygène)\n"
+              "• ppO2 (limite de pression partielle)\n"
+              "• MOD (profondeur maximale)\n"
+              "• Date et heure de l'analyse\n\n"
+              "L'étiquette se colle directement sur la bouteille.\n\n"
+              "Avant la première impression, associez votre imprimante d'étiquettes Bluetooth dans Configuration > Imprimante. "
+              "Utilisez des rouleaux d'étiquettes synthétiques (PP ou PET) pour une tenue waterproof en milieu marin.",
+              Icons.print_outlined,
+            ),
+            Padding(
+              padding: const EdgeInsets.only(bottom: 25),
+              child: SizedBox(
+                width: double.infinity,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.list_alt, size: 18),
+                  label: const Text("VOIR LES IMPRIMANTES COMPATIBLES"),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: Colors.blueAccent,
+                    side: const BorderSide(color: Colors.blueAccent),
+                  ),
+                  onPressed: () => Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                      builder: (context) => const CompatiblePrintersPage(),
+                    ),
+                  ),
+                ),
+              ),
             ),
             const SizedBox(height: 30),
             const Center(

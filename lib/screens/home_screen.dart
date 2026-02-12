@@ -5,13 +5,16 @@ import 'package:fl_chart/fl_chart.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import '../services/bluetooth_service.dart';
+import '../services/printer_service.dart';
 import '../services/o2_math_engine.dart';
+import '../services/label_builder.dart';
 import 'config_page.dart';
 import 'help_page.dart';
 
 class HomeScreen extends StatefulWidget {
   final SentryBluetoothService btService;
-  const HomeScreen({super.key, required this.btService});
+  final SentryPrinterService printerService;
+  const HomeScreen({super.key, required this.btService, required this.printerService});
 
   @override
   State<HomeScreen> createState() => _HomeScreenState();
@@ -26,6 +29,53 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
   // Historique FO2 pour sparkline (max 60 points)
   final List<double> _fo2History = [];
   static const int _maxHistory = 60;
+
+  Future<void> _printLabel() async {
+    final mv = widget.btService.currentMv;
+    final fo2 = O2MathEngine.calculateFO2(mv, widget.btService.calMv);
+    final mod = O2MathEngine.calculateMOD(fo2, widget.btService.ppo2Limit);
+    final ppo2 = widget.btService.ppo2Limit;
+
+    if (!widget.printerService.isPaired) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text("Aucune imprimante associee. Allez dans Configuration."),
+        ),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: Colors.cyan),
+      ),
+    );
+
+    try {
+      final bytes = await LabelBuilder.buildNitroxLabel(
+        fo2: fo2,
+        ppo2Limit: ppo2,
+        mod: mod,
+        dateTime: DateTime.now(),
+      );
+      await widget.printerService.connectAndPrint(bytes);
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Etiquette imprimee !")),
+        );
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erreur impression : $e")),
+        );
+      }
+    }
+  }
 
   void _manualReconnect() {
     final now = DateTime.now();
@@ -441,6 +491,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
           ),
         ),
         actions: [
+          // BOUTON IMPRESSION
+          IconButton(
+            icon: const Icon(Icons.print_outlined, color: Colors.white70),
+            onPressed: _printLabel,
+          ),
           // BOUTON AIDE
           IconButton(
             icon: const Icon(Icons.help_outline, color: Colors.white70),
@@ -455,7 +510,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
             onPressed: () => Navigator.push(
               context,
               MaterialPageRoute(
-                builder: (context) => ConfigPage(btService: widget.btService),
+                builder: (context) => ConfigPage(btService: widget.btService, printerService: widget.printerService),
               ),
             ).then((_) {
               setState(() {});

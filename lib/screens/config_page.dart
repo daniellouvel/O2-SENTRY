@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../services/bluetooth_service.dart';
+import '../services/printer_service.dart';
 
 class SensorInfo {
   final String name;
@@ -68,7 +69,8 @@ const List<SensorInfo> sensorLibrary = [
 
 class ConfigPage extends StatefulWidget {
   final SentryBluetoothService btService;
-  const ConfigPage({super.key, required this.btService});
+  final SentryPrinterService printerService;
+  const ConfigPage({super.key, required this.btService, required this.printerService});
 
   @override
   State<ConfigPage> createState() => _ConfigPageState();
@@ -772,9 +774,283 @@ class _ConfigPageState extends State<ConfigPage> {
                 ],
               ),
             ),
+
+            const SizedBox(height: 40),
+
+            // 7. IMPRIMANTE
+            const Text(
+              "IMPRIMANTE",
+              style: TextStyle(
+                color: Colors.blueAccent,
+                fontWeight: FontWeight.bold,
+                fontSize: 12,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Container(
+              padding: const EdgeInsets.all(15),
+              decoration: BoxDecoration(
+                color: const Color(0xFF1E1E1E),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: Colors.white10),
+              ),
+              child: Column(
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      const Text(
+                        "Imprimante :",
+                        style: TextStyle(color: Colors.white70),
+                      ),
+                      Text(
+                        widget.printerService.savedPrinterName ?? "Aucune",
+                        style: const TextStyle(
+                          color: Colors.grey,
+                          fontSize: 11,
+                        ),
+                      ),
+                    ],
+                  ),
+                  if (widget.printerService.savedPrinterMac != null)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 4),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "MAC :",
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Text(
+                            widget.printerService.savedPrinterMac!,
+                            style: const TextStyle(
+                              color: Colors.grey,
+                              fontSize: 11,
+                              fontFamily: 'monospace',
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  const SizedBox(height: 10),
+                  StreamBuilder<PrinterConnectionState>(
+                    stream: widget.printerService.connectionStateStream,
+                    initialData: widget.printerService.currentState,
+                    builder: (context, snapshot) {
+                      final state =
+                          snapshot.data ?? PrinterConnectionState.disconnected;
+                      String label;
+                      Color color;
+                      switch (state) {
+                        case PrinterConnectionState.connected:
+                          label = "Connecte";
+                          color = Colors.greenAccent;
+                          break;
+                        case PrinterConnectionState.scanning:
+                          label = "Recherche...";
+                          color = Colors.cyan;
+                          break;
+                        case PrinterConnectionState.connecting:
+                          label = "Connexion...";
+                          color = Colors.orangeAccent;
+                          break;
+                        case PrinterConnectionState.disconnected:
+                          label = "Deconnecte";
+                          color = Colors.redAccent;
+                          break;
+                      }
+                      return Row(
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                        children: [
+                          const Text(
+                            "Statut :",
+                            style: TextStyle(color: Colors.white70),
+                          ),
+                          Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Container(
+                                width: 8,
+                                height: 8,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: color,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Text(
+                                label,
+                                style: TextStyle(
+                                  color: color,
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                  const SizedBox(height: 15),
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      icon: const Icon(Icons.bluetooth_searching, size: 18),
+                      label: const Text("RECHERCHER UNE IMPRIMANTE"),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.blueAccent,
+                        foregroundColor: Colors.white,
+                      ),
+                      onPressed: () {
+                        widget.printerService.startScan();
+                        _showPrinterSelectionDialog();
+                      },
+                    ),
+                  ),
+                  if (widget.printerService.isPaired) ...[
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      width: double.infinity,
+                      child: OutlinedButton(
+                        style: OutlinedButton.styleFrom(
+                          side: const BorderSide(color: Colors.redAccent),
+                        ),
+                        onPressed: () async {
+                          bool ok = await _confirm(
+                            "Dissocier",
+                            "Oublier cette imprimante ?",
+                          );
+                          if (ok) {
+                            await widget.printerService.forgetPrinter();
+                            setState(() {});
+                          }
+                        },
+                        child: const Text(
+                          "DISSOCIER L'IMPRIMANTE",
+                          style: TextStyle(color: Colors.redAccent),
+                        ),
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
           ],
         ),
       ),
+    );
+  }
+
+  void _showPrinterSelectionDialog() {
+    showModalBottomSheet(
+      context: context,
+      isDismissible: true,
+      backgroundColor: const Color(0xFF1E1E1E),
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (context) {
+        return StreamBuilder<Map<String, String>>(
+          stream: widget.printerService.discoveredPrintersStream,
+          builder: (context, snapshot) {
+            final printers = snapshot.data ?? {};
+            return Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Colors.white24,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  const Text(
+                    "ASSOCIER UNE IMPRIMANTE",
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      letterSpacing: 1.2,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  if (printers.isEmpty)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 30),
+                      child: Column(
+                        children: [
+                          SizedBox(
+                            width: 24,
+                            height: 24,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.cyan,
+                            ),
+                          ),
+                          SizedBox(height: 12),
+                          Text(
+                            "Recherche en cours...",
+                            style: TextStyle(
+                              color: Colors.white54,
+                              fontSize: 13,
+                            ),
+                          ),
+                        ],
+                      ),
+                    )
+                  else
+                    ...printers.entries.map((entry) {
+                      final mac = entry.key;
+                      final name = entry.value;
+                      final shortMac = mac.length >= 8
+                          ? mac.substring(mac.length - 8)
+                          : mac;
+                      return ListTile(
+                        leading: const Icon(
+                          Icons.print,
+                          color: Colors.cyan,
+                        ),
+                        title: Text(
+                          name,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                        subtitle: Text(
+                          shortMac,
+                          style: const TextStyle(
+                            color: Colors.white38,
+                            fontSize: 11,
+                            fontFamily: 'monospace',
+                          ),
+                        ),
+                        onTap: () async {
+                          await widget.printerService.selectPrinter(mac);
+                          if (mounted) {
+                            Navigator.pop(context);
+                            setState(() {});
+                          }
+                        },
+                      );
+                    }),
+                  const SizedBox(height: 12),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text(
+                      "ANNULER",
+                      style: TextStyle(color: Colors.white54),
+                    ),
+                  ),
+                ],
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
