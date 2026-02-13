@@ -185,8 +185,10 @@ class SentryPrinterService {
       await FlutterBluePlus.startScan(timeout: const Duration(seconds: 8));
 
       // Attendre le resultat ou timeout
-      targetDevice = await completer.future
-          .timeout(const Duration(seconds: 8), onTimeout: () => null);
+      targetDevice = await completer.future.timeout(
+        const Duration(seconds: 8),
+        onTimeout: () => null,
+      );
       sub.cancel();
       await FlutterBluePlus.stopScan();
     }
@@ -278,7 +280,8 @@ class SentryPrinterService {
 
     final mtu = _printerDevice!.mtuNow;
     final chunkSize = (mtu - 3).clamp(20, 512);
-    final useWithoutResponse = _writeCharacteristic!.properties.writeWithoutResponse;
+    final useWithoutResponse =
+        _writeCharacteristic!.properties.writeWithoutResponse;
 
     for (var i = 0; i < bytes.length; i += chunkSize) {
       final end = (i + chunkSize > bytes.length) ? bytes.length : i + chunkSize;

@@ -21,6 +21,8 @@ dependencies:
   package_info_plus: ^8.0.0
   fl_chart: ^0.69.0
   flutter_esc_pos_utils: ^1.0.1
+  share_plus: ^10.0.0
+  path_provider: ^2.1.0
   
 dev_dependencies:
   flutter_test:

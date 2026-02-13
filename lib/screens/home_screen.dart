@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import '../services/bluetooth_service.dart';
 import '../services/printer_service.dart';
 import '../services/o2_math_engine.dart';
@@ -35,13 +38,11 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     final fo2 = O2MathEngine.calculateFO2(mv, widget.btService.calMv);
     final mod = O2MathEngine.calculateMOD(fo2, widget.btService.ppo2Limit);
     final ppo2 = widget.btService.ppo2Limit;
+    final now = DateTime.now();
 
     if (!widget.printerService.isPaired) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text("Aucune imprimante associee. Allez dans Configuration."),
-        ),
-      );
+      // Pas d'imprimante → partager l'etiquette en image
+      await _shareLabel(fo2, ppo2, mod, now);
       return;
     }
 
@@ -58,7 +59,7 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         fo2: fo2,
         ppo2Limit: ppo2,
         mod: mod,
-        dateTime: DateTime.now(),
+        dateTime: now,
       );
       await widget.printerService.connectAndPrint(bytes);
       if (mounted) {
@@ -72,6 +73,45 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text("Erreur impression : $e")),
+        );
+      }
+    }
+  }
+
+  Future<void> _shareLabel(double fo2, double ppo2, double mod, DateTime dateTime) async {
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => const Center(
+        child: CircularProgressIndicator(color: Colors.cyan),
+      ),
+    );
+
+    try {
+      final pngBytes = await LabelBuilder.buildNitroxLabelImage(
+        fo2: fo2,
+        ppo2Limit: ppo2,
+        mod: mod,
+        dateTime: dateTime,
+      );
+
+      final dir = await getTemporaryDirectory();
+      final file = File('${dir.path}/o2_sentry_label.png');
+      await file.writeAsBytes(pngBytes);
+
+      if (mounted) Navigator.pop(context);
+
+      await Share.shareXFiles(
+        [XFile(file.path)],
+        text: 'O2-Sentry Nitrox - FO2: ${fo2.toStringAsFixed(1)}% | '
+            'ppO2: ${ppo2.toStringAsFixed(2)} bar | '
+            'MOD: ${mod.toStringAsFixed(0)}m',
+      );
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text("Erreur partage : $e")),
         );
       }
     }
