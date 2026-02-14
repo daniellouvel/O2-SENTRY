@@ -64,6 +64,8 @@ class SentryBluetoothService {
   StreamSubscription? _charSubscription;
   Timer? _reconnectTimer;
   Timer? _mvWatchdog;
+  DateTime? _lastScanTime;
+  static const int _minScanIntervalSeconds = 10;
 
   String? get associatedProbeName => _savedProbeName;
   String? get associatedProbeMac => _savedProbeMac;
@@ -208,6 +210,15 @@ class SentryBluetoothService {
     if (_isConnecting) return;
     if (_disposed) return;
     if (_currentState == SentryConnectionState.connected) return;
+
+    // Anti-spam : empecher les scans trop rapproches (Android throttle a ~5 scans/30s)
+    final now = DateTime.now();
+    if (_lastScanTime != null &&
+        now.difference(_lastScanTime!).inSeconds < _minScanIntervalSeconds) {
+      _scheduleReconnect();
+      return;
+    }
+    _lastScanTime = now;
 
     _setState(SentryConnectionState.scanning);
 
@@ -435,14 +446,14 @@ class SentryBluetoothService {
   }
 
   /// Planifie une tentative de reconnexion
-  /// - 2s si sonde associée par MAC (reconnexion rapide)
+  /// - 5s si sonde associée par MAC (avec anti-spam scan)
   /// - Pas de retry auto si aucune sonde associée
   void _scheduleReconnect() {
     if (_disposed) return;
     if (_savedProbeMac == null) return;
     if (_reconnectTimer?.isActive == true) return;
 
-    _reconnectTimer = Timer(const Duration(seconds: 2), () {
+    _reconnectTimer = Timer(const Duration(seconds: 5), () {
       if (!_disposed &&
           _savedProbeMac != null &&
           _currentState != SentryConnectionState.connected) {

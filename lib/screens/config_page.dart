@@ -856,8 +856,8 @@ class _ConfigPageState extends State<ConfigPage> {
                           color = Colors.orangeAccent;
                           break;
                         case PrinterConnectionState.disconnected:
-                          label = "Deconnecte";
-                          color = Colors.redAccent;
+                          label = widget.printerService.isPaired ? "Pret" : "Deconnecte";
+                          color = widget.printerService.isPaired ? Colors.greenAccent : Colors.redAccent;
                           break;
                       }
                       return Row(
@@ -910,6 +910,33 @@ class _ConfigPageState extends State<ConfigPage> {
                     ),
                   ),
                   if (widget.printerService.isPaired) ...[
+                    const SizedBox(height: 15),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        const Text(
+                          "Format etiquette :",
+                          style: TextStyle(color: Colors.white70),
+                        ),
+                        DropdownButton<String>(
+                          value: widget.printerService.labelFormat.key,
+                          dropdownColor: const Color(0xFF1E1E1E),
+                          style: const TextStyle(color: Colors.white, fontSize: 14),
+                          items: labelFormats
+                              .map((f) => DropdownMenuItem(
+                                    value: f.key,
+                                    child: Text(f.label),
+                                  ))
+                              .toList(),
+                          onChanged: (v) {
+                            if (v == null) return;
+                            final fmt = labelFormats.firstWhere((f) => f.key == v);
+                            widget.printerService.saveLabelFormat(fmt);
+                            setState(() {});
+                          },
+                        ),
+                      ],
+                    ),
                     const SizedBox(height: 10),
                     SizedBox(
                       width: double.infinity,

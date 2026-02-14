@@ -55,13 +55,20 @@ class _HomeScreenState extends State<HomeScreen> with WidgetsBindingObserver {
     );
 
     try {
-      final bytes = await LabelBuilder.buildNitroxLabel(
+      final fmt = widget.printerService.labelFormat;
+      final pngBytes = await LabelBuilder.buildNitroxLabelImage(
         fo2: fo2,
         ppo2Limit: ppo2,
         mod: mod,
         dateTime: now,
+        widthPx: fmt.widthPx,
+        heightPx: fmt.heightPx,
       );
-      await widget.printerService.connectAndPrint(bytes);
+      await widget.printerService.connectAndPrint(
+        pngBytes: pngBytes,
+        labelWidth: fmt.widthPx,
+        labelHeight: fmt.heightPx,
+      );
       if (mounted) {
         Navigator.pop(context);
         ScaffoldMessenger.of(context).showSnackBar(

@@ -5,7 +5,7 @@
 import FlutterMacOS
 import Foundation
 
-import flutter_blue_plus
+import flutter_blue_plus_darwin
 import package_info_plus
 import share_plus
 import shared_preferences_foundation
